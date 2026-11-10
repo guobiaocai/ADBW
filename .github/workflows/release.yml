@@ -1,0 +1,184 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  android-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      STAGE: ${{ github.workspace }}/.ci-staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare staging
+        run: |
+          mkdir -p "$STAGE"
+          echo "$(date -u +%T) job start" >> "$STAGE/android-release-progress.log"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+
+      - name: Prepare signing keystore
+        id: ks
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          STORE_PASS: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
+            echo "mode=secret" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=generated" >> "$GITHUB_OUTPUT"
+            STORE_PASS=vibeadb123
+            KEY_PASS=vibeadb123
+            KEY_ALIAS=vibeadb
+            keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/release.keystore" \
+              -storepass "$STORE_PASS" -keypass "$KEY_PASS" -alias "$KEY_ALIAS" \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=vibeADB"
+          fi
+          SP="${STORE_PASS:-vibeadb123}"
+          KP="${KEY_PASS:-vibeadb123}"
+          KA="${KEY_ALIAS:-vibeadb}"
+          {
+            echo "store_pass=$SP"
+            echo "key_pass=$KP"
+            echo "key_alias=$KA"
+          } >> "$GITHUB_OUTPUT"
+          echo "$(date -u +%T) keystore ready" >> "$STAGE/android-release-progress.log"
+
+      - name: Unit tests
+        shell: bash
+        working-directory: android
+        run: |
+          set -o pipefail
+          gradle --no-daemon :app:testDebugUnitTest 2>&1 | tee "$STAGE/android-release-test.log"
+          echo "$(date -u +%T) unit tests done" >> "$STAGE/android-release-progress.log"
+
+      - name: Build release APK
+        shell: bash
+        working-directory: android
+        env:
+          VIBEADB_STORE_FILE: ${{ github.workspace }}/release.keystore
+          VIBEADB_STORE_PASSWORD: ${{ steps.ks.outputs.store_pass }}
+          VIBEADB_KEY_PASSWORD: ${{ steps.ks.outputs.key_pass }}
+          VIBEADB_KEY_ALIAS: ${{ steps.ks.outputs.key_alias }}
+        run: |
+          set -o pipefail
+          gradle --no-daemon :app:assembleRelease 2>&1 | tee "$STAGE/android-release-build.log"
+          echo "$(date -u +%T) assemble done" >> "$STAGE/android-release-progress.log"
+
+      - name: Rename APK
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk "adbw-${{ github.ref_name }}-release.apk"
+          echo "$(date -u +%T) apk renamed" >> "$STAGE/android-release-progress.log"
+
+      - name: Upload generated keystore（请下载保存并配置为 Secret，保证后续版本签名一致）
+        if: steps.ks.outputs.mode == 'generated'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-keystore
+          path: release.keystore
+
+      - name: Attach APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: adbw-*-release.apk
+
+      - name: Mark release attached
+        if: always()
+        run: echo "$(date -u +%T) release attach attempted" >> "$STAGE/android-release-progress.log" || true
+
+
+  relay-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      STAGE: ${{ github.workspace }}/.ci-staging
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare staging
+        run: mkdir -p "$GITHUB_WORKSPACE/.ci-staging"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install & test & build
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/relay-release-install.log"
+          npm test 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/relay-release-test.log"
+          npx wrangler deploy --dry-run --outdir=dist 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/relay-release-build.log"
+
+      - name: Package relay file
+        run: |
+          cd ..
+          zip -r "adbw-relay-${{ github.ref_name }}.zip" relay/dist relay/wrangler.toml relay/DEPLOY.md
+          echo "$(date -u +%T) relay zip ready" >> "$GITHUB_WORKSPACE/.ci-staging/relay-release-progress.log"
+
+      - name: Attach relay file to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: adbw-relay-*.zip
+
+
+  mcp-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      STAGE: ${{ github.workspace }}/.ci-staging
+    defaults:
+      run:
+        working-directory: mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare staging
+        run: mkdir -p "$GITHUB_WORKSPACE/.ci-staging"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install & test & build
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/mcp-release-install.log"
+          npm test 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/mcp-release-test.log"
+          npm run build 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/mcp-release-build.log"
+
+      - name: Package mcp server
+        run: |
+          cd ..
+          zip -r "adbw-mcp-${{ github.ref_name }}.zip" mcp/dist mcp/package.json mcp/README.md
+          echo "$(date -u +%T) mcp zip ready" >> "$GITHUB_WORKSPACE/.ci-staging/mcp-release-progress.log"
+
+      - name: Attach mcp server to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: adbw-mcp-*.zip
+

@@ -1,0 +1,158 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "android/**"
+      - "relay/**"
+      - "mcp/**"
+      - "protocol/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "android/**"
+      - "relay/**"
+      - "mcp/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      STAGE: ${{ github.workspace }}/.ci-staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare staging
+        run: |
+          mkdir -p "$STAGE"
+          echo "$(date -u +%T) job start" >> "$STAGE/android-progress.log"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+
+      - name: Unit tests
+        shell: bash
+        working-directory: android
+        run: |
+          set -o pipefail
+          gradle --no-daemon :app:testDebugUnitTest 2>&1 | tee "$STAGE/android-test.log"
+          echo "$(date -u +%T) unit tests done" >> "$STAGE/android-progress.log"
+
+      - name: Prepare signing keystore（secrets 优先，保证 artifact APK 签名一致）
+        id: ks
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          STORE_PASS: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$GITHUB_WORKSPACE/release.keystore"
+          else
+            keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/release.keystore" \
+              -storepass vibeadb123 -keypass vibeadb123 -alias vibeadb \
+              -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=vibeADB"
+          fi
+          {
+            echo "store_pass=${STORE_PASS:-vibeadb123}"
+            echo "key_pass=${KEY_PASS:-vibeadb123}"
+            echo "key_alias=${KEY_ALIAS:-vibeadb}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build release APK
+        shell: bash
+        working-directory: android
+        env:
+          VIBEADB_STORE_FILE: ${{ github.workspace }}/release.keystore
+          VIBEADB_STORE_PASSWORD: ${{ steps.ks.outputs.store_pass }}
+          VIBEADB_KEY_PASSWORD: ${{ steps.ks.outputs.key_pass }}
+          VIBEADB_KEY_ALIAS: ${{ steps.ks.outputs.key_alias }}
+        run: |
+          set -o pipefail
+          gradle --no-daemon :app:assembleRelease 2>&1 | tee -a "$STAGE/android-build.log"
+          echo "$(date -u +%T) assemble done" >> "$STAGE/android-progress.log"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ADBW-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+
+
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      STAGE: ${{ github.workspace }}/.ci-staging
+    defaults:
+      run:
+        working-directory: relay
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare staging
+        run: mkdir -p "$GITHUB_WORKSPACE/.ci-staging"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install & test & dry-run
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/relay-install.log"
+          npm test 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/relay-test.log"
+          npx wrangler deploy --dry-run --outdir=dist 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/relay-build.log"
+
+
+  mcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      STAGE: ${{ github.workspace }}/.ci-staging
+    defaults:
+      run:
+        working-directory: mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare staging
+        run: mkdir -p "$GITHUB_WORKSPACE/.ci-staging"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install & test & build
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/mcp-install.log"
+          npm test 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/mcp-test.log"
+          npm run build 2>&1 | tee "$GITHUB_WORKSPACE/.ci-staging/mcp-build.log"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ADBW-mcp
+          path: |
+            mcp/dist/
+            mcp/package.json
+            mcp/README.md
+

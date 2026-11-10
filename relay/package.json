@@ -1,0 +1,23 @@
+{
+  "name": "adbw-relay",
+  "version": "2.3.1",
+  "private": true,
+  "description": "ADBW Durable Object edge relay (device leg <-> client leg pairing pipe)",
+  "author": "guobiaocai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/guobiaocai/ADBW.git",
+    "directory": "relay"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "wrangler": "^3.90.0"
+  }
+}

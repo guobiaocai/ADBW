@@ -1,0 +1,28 @@
+# Android
+.gradle/
+build/
+app/build/
+local.properties
+*.keystore
+*.jks
+!debug.keystore
+android/keystore/
+.kotlin/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Node
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+
+# Misc
+*.log
+!.ci-staging/*.log
+!ci-logs/**/*.log
+.DS_Store
+.ci-staging/

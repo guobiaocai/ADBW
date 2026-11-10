@@ -1,0 +1,32 @@
+{
+  "name": "adbw-mcp",
+  "version": "2.3.1",
+  "private": true,
+  "type": "module",
+  "description": "ADBW MCP server — AI Agent 通过原生 MCP 工具调用真机（Shizuku）能力",
+  "author": "guobiaocai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/guobiaocai/ADBW.git",
+    "directory": "mcp"
+  },
+  "bin": {
+    "adbw-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
